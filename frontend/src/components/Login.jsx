@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
+import { Card } from './ui/Card';
+import { Button } from './ui/Button';
+import { Input } from './ui/Input';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -17,79 +20,67 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await api.post('/auth/login', { email, password });
-      login(data.user, data.token);
+      login(data.data.user, data.token);
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err.response?.data?.error || 'Login failed');
+      setError(err.response?.data?.message || 'Login failed');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="app-shell">
-      <header className="app-brand-bar">
-        <div>
-          <div className="app-brand-title">SRM Carpool</div>
-          <div className="app-brand-subtitle">Log in with your SRM email to start sharing rides.</div>
+    <div className="bg-gradient-radial flex-center" style={{ minHeight: '100vh', padding: '1.5rem' }}>
+      <div style={{ maxWidth: '420px', width: '100%' }} className="animate-slide-up">
+        
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+          <h1 className="text-title text-gradient" style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>Carpool v2</h1>
+          <p className="text-muted">SRM University Student Rideshare</p>
         </div>
-        <div className="app-chip">SRM students only</div>
-      </header>
 
-      <main className="app-main-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ maxWidth: 420, width: '100%' }}>
-          <div className="card-elevated">
-            <h2>Welcome back</h2>
-            <p className="helper-text">
-              Use your SRM college email (<code>@srmist.edu.in</code>) that you registered with.
-            </p>
-            {error && <p className="field-error">{error}</p>}
-            <form onSubmit={handleSubmit}>
-              <label className="field-label" htmlFor="login-email">
-                SRM email
-              </label>
-              <input
-                id="login-email"
-                type="email"
-                placeholder="you@srmist.edu.in"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="text-input"
-              />
+        <Card>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Welcome back</h2>
+          <p className="text-sm text-muted" style={{ marginBottom: '1.5rem' }}>
+            Login with your official SRM email address.
+          </p>
+          
+          {error && (
+            <div style={{ padding: '0.75rem', background: 'var(--pk-danger-bg)', color: 'var(--pk-danger)', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem', fontSize: '0.875rem' }}>
+              {error}
+            </div>
+          )}
 
-              <label className="field-label" htmlFor="login-password" style={{ marginTop: 12 }}>
-                Password
-              </label>
-              <input
-                id="login-password"
-                type="password"
-                placeholder="Enter password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="text-input"
-              />
+          <form onSubmit={handleSubmit}>
+            <Input
+              label="SRM Email"
+              type="email"
+              placeholder="you@srmist.edu.in"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+            
+            <Input
+              label="Password"
+              type="password"
+              placeholder="Enter your password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="btn btn-primary"
-                style={{ width: '100%', marginTop: 16 }}
-              >
-                {loading ? 'Logging in…' : 'Login'}
-              </button>
-            </form>
+            <Button type="submit" isLoading={loading} style={{ width: '100%', marginTop: '0.5rem' }}>
+              Login to Account
+            </Button>
+          </form>
 
-            <p style={{ marginTop: 18, fontSize: 14, color: '#9ca3af' }}>
-              New here?{' '}
-              <Link to="/register">
-                Create an SRM Carpool account
-              </Link>
-            </p>
-          </div>
-        </div>
-      </main>
+          <p className="text-sm flex-center" style={{ marginTop: '1.5rem', gap: '0.5rem' }}>
+            <span className="text-muted">New to Carpool?</span>
+            <Link to="/register" style={{ fontWeight: 500 }}>Create an account</Link>
+          </p>
+        </Card>
+        
+      </div>
     </div>
   );
 }

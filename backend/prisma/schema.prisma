@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../data/carpool.db"
+}
+
+model User {
+  id                 Int                 @id @default(autoincrement())
+  name               String
+  email              String              @unique
+  passwordHash       String
+  role               String              @default("passenger") // "driver" or "passenger"
+  avatar             String?
+  totalCarbonSaved   Float               @default(0.0)
+  totalFuelSaved     Float               @default(0.0)
+  totalRides         Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  ridesDriven        Ride[]              @relation("DriverRides")
+  ridesJoined        RidePassenger[]
+  recurringTemplates RecurringTemplate[]
+  ratingsGiven       RideRating[]        @relation("Rater")
+  ratingsReceived    RideRating[]        @relation("Rated")
+  messages           ChatMessage[]
+}
+
+model Ride {
+  id                 Int                 @id @default(autoincrement())
+  driverId           Int
+  driver             User                @relation("DriverRides", fields: [driverId], references: [id])
+  originLat          Float
+  originLng          Float
+  originAddress      String?
+  destLat            Float
+  destLng            Float
+  destAddress        String?
+  departureAt        DateTime
+  maxSeats           Int
+  status             String              @default("scheduled") // scheduled, active, completed, cancelled
+  lastLat            Float?
+  lastLng            Float?
+  recurringTemplateId Int?
+  recurringTemplate  RecurringTemplate?  @relation(fields: [recurringTemplateId], references: [id])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  passengers         RidePassenger[]
+  ratings            RideRating[]
+  messages           ChatMessage[]
+}
+
+model RidePassenger {
+  rideId    Int
+  userId    Int
+  ride      Ride     @relation(fields: [rideId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  joinedAt  DateTime @default(now())
+
+  @@id([rideId, userId])
+}
+
+model RecurringTemplate {
+  id            Int      @id @default(autoincrement())
+  driverId      Int
+  driver        User     @relation(fields: [driverId], references: [id])
+  originLat     Float
+  originLng     Float
+  originAddress String?
+  destLat       Float
+  destLng       Float
+  destAddress   String?
+  departureTime String   // e.g., "08:30"
+  daysOfWeek    String   // comma separated 1,2,3,4,5
+  maxSeats      Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  rides         Ride[]
+}
+
+model RideRating {
+  rideId    Int
+  raterId   Int
+  ratedId   Int
+  score     Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  ride      Ride @relation(fields: [rideId], references: [id])
+  rater     User @relation("Rater", fields: [raterId], references: [id])
+  rated     User @relation("Rated", fields: [ratedId], references: [id])
+
+  @@id([rideId, raterId, ratedId])
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  rideId    Int
+  senderId  Int
+  text      String
+  createdAt DateTime @default(now())
+
+  ride      Ride     @relation(fields: [rideId], references: [id])
+  sender    User     @relation(fields: [senderId], references: [id])
+}

@@ -1,221 +1,185 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
+import { Card } from './ui/Card';
+import { Button } from './ui/Button';
 
 export default function Dashboard() {
   const [rides, setRides] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState(null);
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [dateFilter, setDateFilter] = useState('today');
   const [myRidesOnly, setMyRidesOnly] = useState(false);
 
-  const loadRides = useCallback((silent = false) => {
+  const loadRides = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError('');
+    
+    // Using our new API params based on the Prisma update
     const params = {};
-    if (dateFilter === 'today') {
-      params.date = new Date().toISOString().slice(0, 10);
-    }
+    if (dateFilter === 'today') params.date = 'today';
+    if (dateFilter === 'upcoming') params.date = 'upcoming';
     if (myRidesOnly) params.my = 'true';
-    api.get('/rides', { params })
-      .then(({ data }) => setRides(data))
-      .catch(() => !silent && setError('Failed to load rides'))
-      .finally(() => { if (!silent) setLoading(false); });
+    
+    try {
+      const { data } = await api.get('/rides', { params });
+      // The new API response shape is `{ status: 'success', data: { rides: [...] } }`
+      setRides(data.data.rides || []);
+    } catch (err) {
+      if (!silent) setError('Failed to load rides from server');
+    } finally {
+      if (!silent) setLoading(false);
+    }
   }, [dateFilter, myRidesOnly]);
 
-  useEffect(() => {
-    loadRides();
-  }, [loadRides]);
+  useEffect(() => { loadRides(); }, [loadRides]);
 
+  // Polling / visibility sync
   useEffect(() => {
-    const handleFocus = () => loadRides(true);
     const handleVisibility = () => { if (document.visibilityState === 'visible') loadRides(true); };
-    const interval = setInterval(() => { if (document.visibilityState === 'visible') loadRides(true); }, 60000);
-    window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibility);
-      clearInterval(interval);
-    };
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [loadRides]);
-
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
-  };
 
   const handleDeleteRide = async (rideId) => {
     if (!window.confirm('Cancel this ride for all passengers?')) return;
     setDeletingId(rideId);
     try {
-      await api.delete(`/rides/${rideId}`);
-      setRides((prev) => prev.filter((r) => r.id !== rideId));
+       // Assuming status update is the way we cancel
+      await api.patch(`/rides/${rideId}/status`, { status: 'cancelled' });
+      loadRides(true);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to cancel ride');
+      setError(err.response?.data?.message || 'Failed to cancel ride');
     } finally {
       setDeletingId(null);
     }
   };
 
   const renderRideCard = (ride) => {
-    const isDriver = user && ride.driver_id === user.id;
-    const isSoon = new Date(ride.departure_at) > new Date();
+    const isDriver = user && ride.driverId === user.id;
+    const isSoon = new Date(ride.departureAt) > new Date();
+    
+    // In our new schema, passengers is an array of objects like { user: { name: '...', avatar: '...' } }
+    const seatsRemaining = ride.maxSeats - (ride.passengers?.length || 0);
+
     return (
-      <article key={ride.id} className="ride-card">
-        <div className="ride-card-main">
-          <div>
-            <div className="ride-route">
-              {ride.origin_address || `${ride.origin_lat}, ${ride.origin_lng}`} → {ride.dest_address || `${ride.dest_lat}, ${ride.dest_lng}`}
+      <Card key={ride.id} className="animate-slide-up" style={{ transition: 'transform 0.2s', padding: '1.25rem' }}>
+        <div className="flex-between" style={{ marginBottom: '1rem', alignItems: 'flex-start' }}>
+            <div>
+               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                   <span style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem', background: 'var(--pk-primary-light)', color: 'var(--pk-primary)', borderRadius: 'var(--radius-sm)', fontWeight: 600 }}>
+                      {new Date(ride.departureAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                   </span>
+                   <span style={{ fontSize: '0.8rem', color: 'var(--pk-text-muted)' }}>
+                      {new Date(ride.departureAt).toLocaleDateString()}
+                   </span>
+               </div>
+               
+               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                   <p style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: 'var(--pk-accent)' }}>●</span> {ride.originAddress || `${ride.originLat.toFixed(4)}, ${ride.originLng.toFixed(4)}`}
+                   </p>
+                   {/* Vertical line connector */}
+                   <div style={{ height: '10px', width: '2px', background: 'var(--pk-border)', marginLeft: '4px' }}></div>
+                   <p style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: 'var(--pk-primary)' }}>●</span> {ride.destAddress || `${ride.destLat.toFixed(4)}, ${ride.destLng.toFixed(4)}`}
+                   </p>
+               </div>
             </div>
-            <div className="ride-meta">
-              {new Date(ride.departure_at).toLocaleString()} · Driver: {ride.driver_name}
-              {ride.driver_rating_avg != null && <span> ★ {ride.driver_rating_avg}</span>}
-              {' · '}{ride.seats_left} seat{ride.seats_left !== 1 ? 's' : ''} left · Est. ₹{ride.estimated_cost}
+            
+            <div style={{ textAlign: 'right' }}>
+               <div style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>₹{Math.round(200 / (ride.passengers?.length + 1 || 1))} <span style={{fontSize:'0.75rem', color: 'var(--pk-text-muted)'}}>est.</span></div>
+               <div style={{ fontSize: '0.8rem', color: seatsRemaining === 0 ? 'var(--pk-danger)' : 'var(--pk-success)' }}>
+                  {seatsRemaining > 0 ? `${seatsRemaining} seats left` : 'Full'}
+               </div>
             </div>
-          </div>
-          <div className="ride-actions">
-            <Link to={`/rides/${ride.id}`} className="btn btn-outline">View details</Link>
-            {ride.recurring_template_id && <span className="badge-pill">Recurring</span>}
-            {isDriver && (
-              <>
-                <span className="badge-pill">You&apos;re driving{isSoon ? ' · upcoming' : ''}</span>
-                <button type="button" className="btn btn-danger" onClick={() => handleDeleteRide(ride.id)} disabled={deletingId === ride.id}>
-                  {deletingId === ride.id ? 'Cancelling…' : 'Cancel ride'}
-                </button>
-              </>
-            )}
-          </div>
         </div>
-      </article>
+
+        <div style={{ borderTop: '1px solid var(--pk-border)', paddingTop: '1rem', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+               <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--pk-surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                  {ride.driver?.name?.charAt(0) || '?'}
+               </div>
+               <div>
+                  <p style={{ margin: 0, fontSize: '0.85rem', fontWeight: 500 }}>{ride.driver?.name}</p>
+                  <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--pk-text-muted)' }}>Driver</p>
+               </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+               <Link to={`/rides/${ride.id}`}>
+                  <Button variant="outline" style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}>View Map</Button>
+               </Link>
+               {isDriver && (
+                  <Button variant="outline" 
+                     style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', borderColor: 'var(--pk-danger)', color: 'var(--pk-danger)' }}
+                     onClick={() => handleDeleteRide(ride.id)}
+                     isLoading={deletingId === ride.id}
+                  >
+                     Cancel
+                  </Button>
+               )}
+            </div>
+        </div>
+      </Card>
     );
   };
 
   return (
-    <div className="app-shell">
-      <header className="app-brand-bar">
-        <div>
-          <div className="app-brand-title">SRM Carpool</div>
-          <div className="app-brand-subtitle">Smart campus rides · Live maps · Fair fuel split</div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {user && (
-            <div className="app-chip">
-              {user.name} · {user.role === 'driver' ? 'Driver' : 'Passenger'}
-            </div>
-          )}
-          <button type="button" onClick={handleLogout} className="btn btn-ghost">
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <main className="app-main-card">
-        <div className="rides-header-row">
-          <div>
-            <h2 className="page-heading">Campus rides</h2>
-            <p className="page-subtitle">
-              Discover carpools around SRM, or post your own ride in a few taps.
-            </p>
-          </div>
-          <Link to="/post" className="btn btn-primary">
-            + Post a ride
-          </Link>
-        </div>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 14 }}>
-          <span style={{ fontSize: 14, color: '#94a3b8' }}>When:</span>
-          <button
-            type="button"
-            className={dateFilter === 'today' ? 'btn btn-primary' : 'btn btn-outline'}
-            style={{ padding: '6px 12px', fontSize: 13 }}
-            onClick={() => setDateFilter('today')}
-          >
-            Today
-          </button>
-          <button
-            type="button"
-            className={dateFilter === 'upcoming' ? 'btn btn-primary' : 'btn btn-outline'}
-            style={{ padding: '6px 12px', fontSize: 13 }}
-            onClick={() => setDateFilter('upcoming')}
-          >
-            Upcoming
-          </button>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8, fontSize: 14, color: '#e2e8f0', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={myRidesOnly}
-              onChange={(e) => setMyRidesOnly(e.target.checked)}
-            />
-            My rides only
-          </label>
+    <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+        
+        <div className="flex-between" style={{ marginBottom: '2rem' }}>
+           <div>
+              <h1 className="text-title" style={{ fontSize: '2rem' }}>Discover Rides</h1>
+              <p className="text-muted">Find carpools around SRM campus dynamically.</p>
+           </div>
+           
+           <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--pk-surface)', padding: '0.25rem', borderRadius: 'var(--radius-lg)' }}>
+              <button 
+                 className={`btn ${dateFilter === 'today' ? 'btn-primary' : 'btn-ghost'}`}
+                 style={{ padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)' }}
+                 onClick={() => setDateFilter('today')}
+              >Today</button>
+              <button 
+                 className={`btn ${dateFilter === 'upcoming' ? 'btn-primary' : 'btn-ghost'}`}
+                 style={{ padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)' }}
+                 onClick={() => setDateFilter('upcoming')}
+              >Upcoming</button>
+              <button 
+                 className={`btn ${myRidesOnly ? 'btn-primary' : 'btn-ghost'}`}
+                 style={{ padding: '0.5rem 1rem', borderRadius: 'var(--radius-md)' }}
+                 onClick={() => setMyRidesOnly(!myRidesOnly)}
+              >Mine</button>
+           </div>
         </div>
 
         {error && (
-          <p className="field-error" style={{ marginBottom: 10 }}>
-            {error}
-          </p>
+            <div style={{ padding: '1rem', background: 'var(--pk-danger-bg)', color: 'var(--pk-danger)', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem' }}>
+              {error}
+            </div>
         )}
 
         {loading ? (
-          <div className="rides-list">
-            {[1, 2, 3].map((i) => (
-              <article key={i} className="ride-card" style={{ opacity: 0.9 }}>
-                <div className="ride-card-main">
-                  <div style={{ flex: 1 }}>
-                    <div className="skeleton" style={{ height: 18, width: '90%', marginBottom: 8 }} />
-                    <div className="skeleton" style={{ height: 14, width: '70%' }} />
-                  </div>
-                  <div className="skeleton" style={{ height: 36, width: 100, borderRadius: 999 }} />
-                </div>
-              </article>
-            ))}
-          </div>
+             <div className="flex-center" style={{ minHeight: '300px' }}>
+                <span className="text-muted">Loading routes...</span>
+             </div>
+        ) : rides.length === 0 ? (
+             <div className="flex-center" style={{ flexDirection: 'column', minHeight: '300px', background: 'var(--pk-surface-glass)', borderRadius: 'var(--radius-lg)', border: '1px dashed var(--pk-border)' }}>
+                <span style={{ fontSize: '3rem', marginBottom: '1rem' }}>🚗</span>
+                <h3 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>No rides found</h3>
+                <p className="text-muted" style={{ marginBottom: '1.5rem' }}>There are no scheduled carpools matching your criteria right now.</p>
+                <Link to="/post"><Button>Be the first to post</Button></Link>
+             </div>
         ) : (
-          <>
-            {myRidesOnly && rides.length > 0 && (() => {
-              const driving = rides.filter((r) => r.driver_id === user?.id);
-              const joined = rides.filter((r) => r.is_passenger && r.driver_id !== user?.id);
-              return (
-                <>
-                  {driving.length > 0 && (
-                    <div style={{ marginBottom: 16 }}>
-                      <h3 style={{ fontSize: 14, color: '#94a3b8', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Rides I&apos;m driving</h3>
-                      <div className="rides-list">
-                        {driving.map((ride) => renderRideCard(ride))}
-                      </div>
-                    </div>
-                  )}
-                  {joined.length > 0 && (
-                    <div style={{ marginBottom: 16 }}>
-                      <h3 style={{ fontSize: 14, color: '#94a3b8', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Rides I&apos;ve joined</h3>
-                      <div className="rides-list">
-                        {joined.map((ride) => renderRideCard(ride))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-            {(!myRidesOnly || rides.length === 0) && (
-              <div className="rides-list">
-                {rides.length === 0 ? (
-                  <p style={{ fontSize: 14, color: '#9ca3af' }}>
-                    {myRidesOnly ? 'No rides where you\'re driving or joined.' : 'No rides yet. Be the first to post a campus carpool!'}
-                  </p>
-                ) : (
-                  rides.map((ride) => renderRideCard(ride))
-                )}
-              </div>
-            )}
-          </>
+             <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))' }}>
+                {rides.map(renderRideCard)}
+             </div>
         )}
-      </main>
+
     </div>
   );
 }

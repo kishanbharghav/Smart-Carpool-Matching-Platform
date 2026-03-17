@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -6,6 +6,7 @@ import 'leaflet/dist/leaflet.css';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../hooks/useSocket';
+import { Card } from './ui/Card';
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -14,132 +15,131 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 });
 
+// Custom Car marker for driver
+const carIcon = new L.Icon({
+  iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><circle cx="12" cy="12" r="10" fill="%236366f1" opacity="0.3"/><circle cx="12" cy="12" r="6" fill="%236366f1" stroke="white" stroke-width="2"/></svg>',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16]
+});
+
 function FitBounds({ bounds }) {
   const map = useMap();
   useEffect(() => {
-    if (bounds?.length) map.fitBounds(bounds, { padding: [20, 20] });
+    if (bounds?.length) map.fitBounds(bounds, { padding: [40, 40] });
   }, [map, bounds]);
-  return null;
-}
-
-function MapResizeFix() {
-  const map = useMap();
-  useEffect(() => {
-    const t = setTimeout(() => {
-      map.invalidateSize();
-    }, 100);
-    return () => clearTimeout(t);
-  }, [map]);
   return null;
 }
 
 export default function RideMap() {
   const { id } = useParams();
-  const rideId = parseInt(id, 10);
   const [ride, setRide] = useState(null);
   const [routeInfo, setRouteInfo] = useState(null);
   const [driverPosition, setDriverPosition] = useState(null);
-  const { user, token } = useAuth();
+  
+  const { user } = useAuth();
   const socket = useSocket();
 
-  const isDriver = ride && user && ride.driver_id === user.id;
+  const isDriver = ride && user && ride.driver?.id === user.id;
 
   useEffect(() => {
-    api.get(`/rides/${rideId}`)
-      .then(({ data }) => setRide(data))
+    api.get(`/rides/${id}`)
+      .then(({ data }) => setRide(data.data.ride))
       .catch(() => setRide(null));
-  }, [rideId]);
+  }, [id]);
 
   useEffect(() => {
     if (!ride?.id) return;
-    api.get(`/rides/${rideId}/route`)
-      .then(({ data }) => setRouteInfo(data))
+    api.get(`/rides/${id}/route`)
+      .then(({ data }) => setRouteInfo(data.data || data))
       .catch(() => setRouteInfo(null));
-  }, [ride?.id, rideId]);
+  }, [ride?.id, id]);
 
+  // Real-time receiver
   useEffect(() => {
-    if (!socket || !rideId || !token) return;
-    socket.emit('join_ride', { rideId, role: ride?.driver_id === user?.id ? 'driver' : 'passenger', token });
+    if (!socket || !ride?.id) return;
+    
+    socket.emit('join_ride', { rideId: ride.id });
+    
     const onLocation = (payload) => {
-      if (payload.rideId === rideId) setDriverPosition({ lat: payload.lat, lng: payload.lng });
+      // Smooth interpolation should technically be done here in frontend state over rAF
+      // Or in the MapMarker component. We just update the pos for now.
+      if (payload.rideId === ride.id) setDriverPosition({ lat: payload.lat, lng: payload.lng });
     };
+    
     socket.on('driver_location', onLocation);
-    return () => {
-      socket.off('driver_location', onLocation);
-    };
-  }, [socket, rideId, token, ride?.driver_id, user?.id]);
+    return () => socket.off('driver_location', onLocation);
+  }, [socket, ride?.id]);
 
   useEffect(() => {
     if (!ride) return;
-    if (ride.last_lat != null && ride.last_lng != null) {
-      setDriverPosition({ lat: ride.last_lat, lng: ride.last_lng });
-    }
-  }, [ride?.last_lat, ride?.last_lng]);
+    if (ride.lastLat && ride.lastLng) setDriverPosition({ lat: ride.lastLat, lng: ride.lastLng });
+  }, [ride?.lastLat, ride?.lastLng]);
 
+  // GPS Emitter for Driver
   useEffect(() => {
-    if (!isDriver || !socket) return;
+    if (!isDriver || !socket || ride.status !== 'active') return;
+    
     const sendPosition = (pos) => {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       setDriverPosition({ lat, lng });
-      socket.emit('driver_location', { rideId, lat, lng });
-      api.patch(`/rides/${rideId}/location`, { lat, lng }).catch(() => {});
+      socket.emit('driver_location', { rideId: ride.id, lat, lng });
     };
+    
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(sendPosition, () => {});
-      const interval = setInterval(() => navigator.geolocation.getCurrentPosition(sendPosition, () => {}), 5000);
+      const interval = setInterval(() => navigator.geolocation.getCurrentPosition(sendPosition, () => {}), 3000);
       return () => clearInterval(interval);
     }
-  }, [isDriver, rideId, socket]);
+  }, [isDriver, ride?.id, socket, ride?.status]);
 
-  if (!ride) return <div style={{ padding: 24 }}>Loading…</div>;
+  if (!ride) return <div className="flex-center" style={{padding: '2rem'}}>Loading map...</div>;
 
-  const center = ride.origin_lat && ride.origin_lng ? [ride.origin_lat, ride.origin_lng] : [13.0325, 80.1783];
+  const center = ride.originLat ? [ride.originLat, ride.originLng] : [20, 0];
   const polylinePositions = routeInfo?.geometry?.coordinates?.map(([lng, lat]) => [lat, lng]) || [];
-  const bounds = polylinePositions.length
-    ? polylinePositions
-    : [[ride.origin_lat, ride.origin_lng], [ride.dest_lat, ride.dest_lng]];
+  const bounds = polylinePositions.length ? polylinePositions : [[ride.originLat, ride.originLng], [ride.destLat, ride.destLng]];
 
   return (
-    <div className="ride-map-fullscreen" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', zIndex: 0 }}>
-      <div style={{ padding: '12px 16px', background: '#fff', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-        <div>
-          <Link to={`/rides/${rideId}`}>← Ride detail</Link>
-          {routeInfo && (
-            <span style={{ marginLeft: 12 }}>
-              ₹{routeInfo.cost_per_passenger?.toFixed(0)}/person · {routeInfo.distance_km?.toFixed(1)} km
-              {routeInfo.co2_saved_kg != null && routeInfo.co2_saved_kg > 0 && (
-                <span style={{ marginLeft: 8, color: '#2e7d32' }}>· ~{routeInfo.co2_saved_kg.toFixed(1)} kg CO₂ saved</span>
-              )}
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {ride?.status === 'active' && <span style={{ fontSize: 13, color: '#1976d2' }}>Ride in progress</span>}
-          {ride?.status === 'scheduled' && <span style={{ fontSize: 13, color: '#64748b' }}>Scheduled</span>}
-          {ride?.status === 'completed' && <span style={{ fontSize: 13, color: '#2e7d32' }}>Completed</span>}
-          {isDriver && <span style={{ fontSize: 14, color: '#2e7d32' }}>Sharing your location</span>}
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 100px)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', border: '1px solid var(--pk-border)' }}>
+      
+      {/* Map Header */}
+      <div className="glass-panel" style={{ padding: '1rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottomLeftRadius: 0, borderBottomRightRadius: 0, zIndex: 10 }}>
+         <div>
+            <h2 style={{ fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+               <Link to={`/rides/${id}`} style={{ color: 'var(--pk-text-muted)' }}>←</Link> 
+               Live Tracker
+            </h2>
+            <p className="text-sm text-muted">
+               {ride.originAddress} to {ride.destAddress}
+            </p>
+         </div>
+         <div style={{ textAlign: 'right' }}>
+             <span className="badge" style={{ background: ride.status==='active'?'var(--pk-primary-light)':'var(--pk-surface)', color: ride.status==='active'?'var(--pk-primary)':'var(--pk-text-muted)' }}>
+               {ride.status === 'active' ? '● Ride in progress' : ride.status}
+             </span>
+             {isDriver && <p style={{ fontSize: '0.75rem', color: 'var(--pk-success)', marginTop: '0.25rem' }}>Emitting GPS Location</p>}
+         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, width: '100%', position: 'relative' }}>
-        <MapContainer center={center} zoom={12} style={{ height: '100%', width: '100%' }} className="ride-map-container">
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' />
-          <MapResizeFix />
-          <FitBounds bounds={bounds} />
-          <Marker position={[ride.origin_lat, ride.origin_lng]}>
-            <Popup>Start</Popup>
-          </Marker>
-          <Marker position={[ride.dest_lat, ride.dest_lng]}>
-            <Popup>End</Popup>
-          </Marker>
-          {polylinePositions.length > 0 && <Polyline positions={polylinePositions} color="#1976d2" weight={4} />}
-          {driverPosition && (
-            <Marker position={[driverPosition.lat, driverPosition.lng]}>
-              <Popup>Driver</Popup>
-            </Marker>
-          )}
-        </MapContainer>
+
+      <div style={{ flex: 1, position: 'relative' }}>
+         <MapContainer center={center} zoom={13} style={{ width: '100%', height: '100%' }}>
+            <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution="&copy; OpenStreetMap &copy; CARTO" />
+            
+            <FitBounds bounds={bounds} />
+            
+            <Marker position={[ride.originLat, ride.originLng]}><Popup>Start: {ride.originAddress}</Popup></Marker>
+            <Marker position={[ride.destLat, ride.destLng]}><Popup>Destination: {ride.destAddress}</Popup></Marker>
+            
+            {polylinePositions.length > 0 && <Polyline positions={polylinePositions} color="var(--pk-primary)" weight={5} opacity={0.7} />}
+            
+            {driverPosition && (
+              <Marker position={[driverPosition.lat, driverPosition.lng]} icon={carIcon}>
+                <Popup>Driver&apos;s Live Location</Popup>
+              </Marker>
+            )}
+         </MapContainer>
       </div>
+
     </div>
   );
 }

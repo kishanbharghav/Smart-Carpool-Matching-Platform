@@ -23,8 +23,9 @@ export function AuthProvider({ children }) {
     const controller = new AbortController();
     fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setUser)
-      .catch(() => {
+      .then((data) => setUser(data.data.user))
+      .catch((err) => {
+        console.error('Auth check error', err);
         setToken(null);
         setUser(null);
       });

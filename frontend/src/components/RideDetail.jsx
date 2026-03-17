@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { useSocket } from '../hooks/useSocket';
+import { Card } from './ui/Card';
+import { Button } from './ui/Button';
+import { Input } from './ui/Input';
 
 export default function RideDetail() {
   const { id } = useParams();
@@ -10,266 +14,240 @@ export default function RideDetail() {
   const [routeInfo, setRouteInfo] = useState(null);
   const [joining, setJoining] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [error, setError] = useState('');
-  const [ratingScore, setRatingScore] = useState(5);
-  const [ratingComment, setRatingComment] = useState('');
-  const [ratingTargetId, setRatingTargetId] = useState(null);
-  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  
+  // Chat state
+  const [chatMessage, setChatMessage] = useState('');
+  const [messages, setMessages] = useState([]);
+  const chatEndRef = useRef(null);
+
   const { user } = useAuth();
+  const socket = useSocket();
   const navigate = useNavigate();
   const showToast = useToast();
 
-  const isDriver = ride && user && ride.driver_id === user.id;
-  const isPassenger = ride?.is_passenger === true;
-  const canJoin = ride && !isDriver && !isPassenger && ride.seats_left > 0 && ride.status === 'scheduled';
-  const canStartRide = isDriver && ride?.status === 'scheduled';
-  const canEndRide = isDriver && ride?.status === 'active';
-  const canRate = ride?.status === 'completed' && (isDriver || isPassenger);
-  const ratingTargets = canRate
-    ? (isPassenger ? [{ id: ride.driver_id, name: ride.driver_name }] : (ride.passengers || []).map((p) => ({ id: p.id, name: p.name })))
-    : [];
+  const isDriver = ride && user && ride.driver?.id === user.id;
+  const isPassenger = ride?.passengers?.some(p => p.user.id === user?.id);
+  const seatsRemaining = ride ? (ride.maxSeats - (ride.passengers?.length || 0)) : 0;
+  const canJoin = ride && !isDriver && !isPassenger && seatsRemaining > 0 && ride.status === 'scheduled';
+  
+  const canChat = isDriver || isPassenger;
 
   useEffect(() => {
     api.get(`/rides/${id}`)
-      .then(({ data }) => setRide(data))
+      .then(({ data }) => {
+         setRide(data.data.ride);
+         setMessages(data.data.ride.messages || []);
+      })
       .catch(() => setError('Ride not found'));
   }, [id]);
 
   useEffect(() => {
     if (!ride?.id) return;
     api.get(`/rides/${id}/route`)
-      .then(({ data }) => setRouteInfo(data))
+      .then(({ data }) => setRouteInfo(data.data || data)) // backward compat with direct return vs nest
       .catch(() => setRouteInfo(null));
   }, [ride?.id, id]);
 
+  // Socket logic for Chat
+  useEffect(() => {
+    if (!socket || !ride?.id || !canChat) return;
+    socket.emit('join_ride', { rideId: ride.id });
+    
+    const onNewMessage = (msg) => {
+      setMessages(prev => [...prev, msg]);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    };
+    
+    socket.on('new_message', onNewMessage);
+    return () => socket.off('new_message', onNewMessage);
+  }, [socket, ride?.id, canChat]);
+
   const handleJoin = () => {
-    setJoining(true);
-    setError('');
+    setJoining(true); setError('');
     api.post(`/rides/${id}/join`)
-      .then(({ data }) => {
-        setRide(data);
-        showToast('You joined this ride!');
+      .then(() => {
+        showToast('You joined this ride!', 'success');
         navigate(`/rides/${id}/map`);
       })
-      .catch((err) => setError(err.response?.data?.error || 'Failed to join'))
+      .catch((err) => setError(err.response?.data?.message || 'Failed to join'))
       .finally(() => setJoining(false));
   };
 
   const handleLeave = () => {
-    setLeaving(true);
-    setError('');
+    setLeaving(true); setError('');
+    // For Prisma implementation, leaving implies removing passenger
     api.post(`/rides/${id}/leave`)
       .then(() => {
-        showToast('You left the ride');
-        navigate('/');
+        showToast('You left the ride'); navigate('/');
       })
-      .catch((err) => setError(err.response?.data?.error || 'Failed to leave'))
+      .catch((err) => setError(err.response?.data?.message || 'Failed to leave'))
       .finally(() => setLeaving(false));
   };
 
-  const handleDeleteRide = async () => {
-    if (!window.confirm('Cancel this ride for all passengers?')) return;
-    setDeleting(true);
-    setError('');
-    try {
-      await api.delete(`/rides/${id}`);
-      navigate('/');
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to cancel ride');
-    } finally {
-      setDeleting(false);
-    }
-  };
-
   const handleStatusUpdate = async (newStatus) => {
-    setStatusUpdating(true);
-    setError('');
+    setStatusUpdating(true); setError('');
     try {
       const { data } = await api.patch(`/rides/${id}/status`, { status: newStatus });
-      setRide(data);
+      setRide(prev => ({ ...prev, status: newStatus }));
+      showToast(`Ride marked as ${newStatus}`);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to update status');
+      setError(err.response?.data?.message || 'Failed to update status');
     } finally {
       setStatusUpdating(false);
     }
   };
 
-  const handleRate = async (e) => {
+  const sendChat = (e) => {
     e.preventDefault();
-    const targetId = ratingTargetId ?? ratingTargets[0]?.id;
-    if (!targetId) return;
-    setRatingSubmitting(true);
-    setError('');
-    try {
-      await api.post(`/rides/${id}/rate`, { rated_id: targetId, score: ratingScore, comment: ratingComment.trim() || undefined });
-      showToast('Thanks for your rating!');
-      const { data } = await api.get(`/rides/${id}`);
-      setRide(data);
-      setRatingComment('');
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to submit rating');
-    } finally {
-      setRatingSubmitting(false);
-    }
+    if (!chatMessage.trim() || !socket) return;
+    socket.emit('send_message', { rideId: ride.id, text: chatMessage });
+    setChatMessage('');
   };
 
-  if (error && !ride) {
-    return (
-      <div className="app-shell">
-        <main className="app-main-card">
-          <p style={{ marginBottom: 12 }}>{error}</p>
-          <Link to="/" className="btn btn-outline">Back to dashboard</Link>
-        </main>
-      </div>
-    );
-  }
-  if (!ride) {
-    return (
-      <div className="app-shell">
-        <header className="app-brand-bar">
-          <div>
-            <div className="app-brand-title">Ride to campus</div>
-            <div className="app-brand-subtitle">Loading…</div>
-          </div>
-          <Link to="/" className="btn btn-ghost">← Back to dashboard</Link>
-        </header>
-        <main className="app-main-card">
-          <div className="card-elevated">
-            <div className="skeleton" style={{ height: 24, width: 160, marginBottom: 12 }} />
-            <div className="skeleton" style={{ height: 14, width: '100%', marginBottom: 8 }} />
-            <div className="skeleton" style={{ height: 14, width: '85%', marginBottom: 8 }} />
-            <div className="skeleton" style={{ height: 14, width: '70%', marginBottom: 12 }} />
-            <div className="skeleton" style={{ height: 14, width: '90%', marginBottom: 8 }} />
-            <div className="skeleton" style={{ height: 14, width: '80%', marginBottom: 8 }} />
-            <div className="skeleton" style={{ height: 36, width: 120, marginTop: 16, borderRadius: 999 }} />
-          </div>
-        </main>
-      </div>
-    );
-  }
+  if (error && !ride) return <div style={{maxWidth:600, margin:'0 auto', padding: '2rem'}}><Card><p className="text-danger">{error}</p><Link to="/"><Button variant="outline">Back</Button></Link></Card></div>;
+  if (!ride) return <div className="flex-center" style={{height:'300px'}}><div className="animate-pulse">Loading ride details...</div></div>;
 
   return (
-    <div className="app-shell">
-      <header className="app-brand-bar">
-        <div>
-          <div className="app-brand-title">Ride to campus</div>
-          <div className="app-brand-subtitle">
-            See full route, seats and live cost breakdown before you join.
+    <div className="grid-cols-2" style={{ maxWidth: '1100px', margin: '0 auto', alignItems: 'start' }}>
+      
+      {/* LEFT COL: INFO */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <div className="flex-between">
+             <h1 className="text-title" style={{ fontSize: '2rem' }}>Ride Details</h1>
+             <span className="badge" style={{ padding: '0.25rem 0.75rem', borderRadius: '50px', fontSize: '0.8rem', fontWeight: 600, background: ride.status==='active'?'var(--pk-primary-light)':'var(--pk-surface)', color: ride.status==='active'?'var(--pk-primary)':'var(--pk-text-muted)', textTransform:'uppercase' }}>
+               {ride.status}
+             </span>
           </div>
-        </div>
-        <Link to="/" className="btn btn-ghost">
-          ← Back to dashboard
-        </Link>
-      </header>
+          
+          {error && <div style={{ padding: '0.75rem', background: 'var(--pk-danger-bg)', color: 'var(--pk-danger)', borderRadius: 'var(--radius-md)', fontSize: '0.875rem' }}>{error}</div>}
 
-      <main className="app-main-card">
-        {error && <p className="field-error" style={{ marginBottom: 10 }}>{error}</p>}
-        <div className="card-elevated">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <h2 style={{ margin: 0 }}>Ride details</h2>
-            <span className="badge-pill" style={{ textTransform: 'capitalize' }}>
-              {ride.status === 'scheduled' && 'Scheduled'}
-              {ride.status === 'active' && 'In progress'}
-              {ride.status === 'completed' && 'Completed'}
-              {ride.status === 'cancelled' && 'Cancelled'}
-            </span>
-          </div>
-          <p className="helper-text">
-            From {ride.origin_address || `${ride.origin_lat}, ${ride.origin_lng}`} to{' '}
-            {ride.dest_address || `${ride.dest_lat}, ${ride.dest_lng}`}.
-          </p>
+          <Card>
+             <h3 style={{ marginBottom: '1rem' }}>Route</h3>
+             <div style={{ paddingLeft: '1rem', borderLeft: '2px dashed var(--pk-border)', position: 'relative' }}>
+                <div style={{ position: 'absolute', left: '-6px', top: '0', width: '10px', height: '10px', borderRadius: '50%', background: 'var(--pk-primary)' }}></div>
+                <p style={{ fontWeight: 500, marginBottom: '0.25rem' }}>{ride.originAddress || `${ride.originLat.toFixed(4)}, ${ride.originLng.toFixed(4)}`}</p>
+                <p className="text-sm text-muted">Pick-up Location</p>
+                
+                <div style={{ height: '1.5rem' }}></div>
 
-          <p><strong>From:</strong> {ride.origin_address || `${ride.origin_lat}, ${ride.origin_lng}`}</p>
-          <p><strong>To:</strong> {ride.dest_address || `${ride.dest_lat}, ${ride.dest_lng}`}</p>
-          <p><strong>Departure:</strong> {new Date(ride.departure_at).toLocaleString()}</p>
-          <p><strong>Driver:</strong> {ride.driver_name}
-            {ride.driver_rating_avg != null && <span> ★ {ride.driver_rating_avg}</span>}
-          </p>
-          <p><strong>Seats:</strong> {ride.seats_taken} / {ride.max_seats} taken</p>
-          {Array.isArray(ride.passengers) && ride.passengers.length > 0 && (
-            <p><strong>Passengers:</strong> {(ride.passengers).map((p) => p.name).join(', ')}</p>
-          )}
+                <div style={{ position: 'absolute', left: '-6px', bottom: '2rem', width: '10px', height: '10px', borderRadius: '50%', background: 'var(--pk-accent)' }}></div>
+                <p style={{ fontWeight: 500, marginBottom: '0.25rem' }}>{ride.destAddress || `${ride.destLat.toFixed(4)}, ${ride.destLng.toFixed(4)}`}</p>
+                <p className="text-sm text-muted">Drop-off Location</p>
+             </div>
+
+             <div style={{ marginTop: '1.5rem', display: 'flex', gap: '2rem' }}>
+                <div>
+                   <p className="text-sm text-muted">Departure</p>
+                   <p style={{ fontWeight: 600 }}>{new Date(ride.departureAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                </div>
+                <div>
+                   <p className="text-sm text-muted">Available Seats</p>
+                   <p style={{ fontWeight: 600, color: seatsRemaining===0?'var(--pk-danger)':'var(--pk-success)' }}>{seatsRemaining} / {ride.maxSeats}</p>
+                </div>
+             </div>
+          </Card>
+
           {routeInfo && (
-            <>
-              <p><strong>Distance:</strong> {routeInfo.distance_km?.toFixed(1)} km</p>
-              <p><strong>Fuel cost (total):</strong> ₹{routeInfo.fuel_cost_total?.toFixed(0)}</p>
-              <p><strong>Cost per passenger:</strong> ₹{routeInfo.cost_per_passenger?.toFixed(0)}</p>
-              {routeInfo.co2_saved_kg != null && routeInfo.co2_saved_kg > 0 && (
-                <p><strong>CO₂ saved (carpool):</strong> ~{routeInfo.co2_saved_kg.toFixed(1)} kg</p>
-              )}
-            </>
+            <Card>
+               <h3 style={{ marginBottom: '1rem' }}>Cost Breakdown (Est.)</h3>
+               <div className="flex-between" style={{ paddingBottom: '0.5rem', borderBottom: '1px solid var(--pk-border)' }}>
+                  <span className="text-muted">Total Distance</span>
+                  <span>{routeInfo.distanceKm?.toFixed(1) || routeInfo.distance_km?.toFixed(1) || 0} km</span>
+               </div>
+               <div className="flex-between" style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--pk-border)' }}>
+                  <span className="text-muted">Total Fuel Cost</span>
+                  <span>₹{routeInfo.totalFuelCost || routeInfo.fuel_cost_total || "--"}</span>
+               </div>
+               <div className="flex-between" style={{ paddingTop: '0.5rem', fontWeight: 600, color: 'var(--pk-primary)', fontSize: '1.1rem' }}>
+                  <span>Split per person</span>
+                  <span>₹{routeInfo.costPerPerson || routeInfo.cost_per_passenger || "--"}</span>
+               </div>
+            </Card>
           )}
-        </div>
 
-        <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <Link to={`/rides/${id}/map`} className="btn btn-outline">
-            View on map
-          </Link>
-          {canJoin && (
-            <button type="button" onClick={handleJoin} disabled={joining} className="btn btn-primary">
-              {joining ? 'Joining…' : 'Join ride'}
-            </button>
-          )}
-          {canStartRide && (
-            <button type="button" onClick={() => handleStatusUpdate('active')} disabled={statusUpdating} className="btn btn-primary">
-              {statusUpdating ? 'Updating…' : 'Start ride'}
-            </button>
-          )}
-          {canEndRide && (
-            <button type="button" onClick={() => handleStatusUpdate('completed')} disabled={statusUpdating} className="btn btn-outline">
-              {statusUpdating ? 'Updating…' : 'End ride'}
-            </button>
-          )}
-          {isPassenger && (
-            <button type="button" onClick={handleLeave} disabled={leaving} className="btn btn-danger">
-              {leaving ? 'Leaving…' : 'Leave ride'}
-            </button>
-          )}
-          {isDriver && ride?.status === 'scheduled' && (
-            <button type="button" onClick={handleDeleteRide} disabled={deleting} className="btn btn-danger">
-              {deleting ? 'Cancelling…' : 'Cancel this ride'}
-            </button>
-          )}
-          {canRate && ratingTargets.length > 0 && (
-            <div className="card-elevated" style={{ marginTop: 16 }}>
-              <h3 style={{ marginBottom: 8, fontSize: 16 }}>Rate this ride</h3>
-              <form onSubmit={handleRate}>
-                {ratingTargets.length > 1 && (
-                  <div style={{ marginBottom: 8 }}>
-                    <label className="field-label">Rate</label>
-                    <select
-                      className="select-input"
-                      value={ratingTargetId ?? ratingTargets[0]?.id ?? ''}
-                      onChange={(e) => setRatingTargetId(parseInt(e.target.value, 10))}
-                    >
-                      {ratingTargets.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                <div style={{ marginBottom: 8 }}>
-                  <label className="field-label">Score (1–5)</label>
-                  <select className="select-input" value={ratingScore} onChange={(e) => setRatingScore(parseInt(e.target.value, 10))}>
-                    {[5, 4, 3, 2, 1].map((n) => (
-                      <option key={n} value={n}>{n} ★</option>
-                    ))}
-                  </select>
+          <Card style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+             <Link to={`/rides/${id}/map`} style={{ flex: 1 }}><Button variant="outline" style={{width:'100%'}}>View Live Map</Button></Link>
+             
+             {canJoin && <Button onClick={handleJoin} isLoading={joining} style={{ flex: 1 }}>Join Carpool</Button>}
+             
+             {isDriver && ride.status === 'scheduled' && <Button onClick={() => handleStatusUpdate('active')} isLoading={statusUpdating} style={{ flex: 1 }}>Start Ride</Button>}
+             {isDriver && ride.status === 'active' && <Button variant="outline" style={{ borderColor:'var(--pk-success)', color:'var(--pk-success)', flex: 1 }} onClick={() => handleStatusUpdate('completed')} isLoading={statusUpdating}>End Ride</Button>}
+             
+             {isPassenger && <Button variant="outline" style={{ borderColor:'var(--pk-danger)', color:'var(--pk-danger)' }} onClick={handleLeave} isLoading={leaving}>Leave carpool</Button>}
+          </Card>
+      </div>
+
+      {/* RIGHT COL: CHAT & PASSENGERS */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        
+        <Card>
+           <h3 style={{ marginBottom: '1rem' }}>Manifest</h3>
+           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--pk-primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
+                  {ride.driver?.name?.charAt(0) || 'D'}
+              </div>
+              <div>
+                 <p style={{ margin: 0, fontWeight: 500 }}>{ride.driver?.name} <span style={{fontSize:'0.75rem', color:'var(--pk-primary)', background:'var(--pk-primary-light)', padding:'0.1rem 0.3rem', borderRadius:'2px'}}>Driver</span></p>
+                 <p className="text-sm text-muted" style={{ margin: 0 }}>{ride.driver?.totalRides || 0} rides • ★4.9</p>
+              </div>
+           </div>
+
+           {ride.passengers?.map((p, i) => (
+             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--pk-border)' }}>
+                <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--pk-surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
+                    {p.user?.name?.charAt(0) || 'P'}
                 </div>
-                <div style={{ marginBottom: 8 }}>
-                  <label className="field-label">Comment (optional)</label>
-                  <input type="text" className="text-input" value={ratingComment} onChange={(e) => setRatingComment(e.target.value)} placeholder="Quick feedback" />
-                </div>
-                <button type="submit" disabled={ratingSubmitting} className="btn btn-outline">
-                  {ratingSubmitting ? 'Submitting…' : 'Submit rating'}
-                </button>
-              </form>
-            </div>
-          )}
-        </div>
-      </main>
+                <p style={{ margin: 0, fontWeight: 500, fontSize:'0.9rem' }}>{p.user?.name}</p>
+             </div>
+           ))}
+        </Card>
+
+        {canChat && (
+          <Card style={{ display: 'flex', flexDirection: 'column', height: '400px' }}>
+             <h3 style={{ marginBottom: '0.5rem', pb:'0.5rem', borderBottom:'1px solid var(--pk-border)' }}>In-Ride Chat</h3>
+             
+             <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem 0', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+               {messages.length === 0 ? (
+                 <p className="text-muted text-sm text-center" style={{marginTop:'auto', marginBottom:'auto'}}>No messages yet. Say hi!</p>
+               ) : (
+                 messages.map((msg, idx) => {
+                   const isMe = msg.sender?.id === user.id || msg.senderId === user.id;
+                   return (
+                     <div key={idx} style={{ 
+                         alignSelf: isMe ? 'flex-end' : 'flex-start', 
+                         maxWidth: '85%',
+                         background: isMe ? 'var(--pk-primary)' : 'var(--pk-surface)',
+                         color: isMe ? '#fff' : 'var(--pk-text)',
+                         padding: '0.5rem 0.75rem',
+                         borderRadius: 'var(--radius-md)',
+                         borderBottomRightRadius: isMe ? '2px' : 'var(--radius-md)',
+                         borderBottomLeftRadius: isMe ? 'var(--radius-md)' : '2px',
+                     }}>
+                        {!isMe && <span style={{ fontSize: '0.7rem', display: 'block', marginBottom: '2px', opacity: 0.7 }}>{msg.sender?.name || 'User'}</span>}
+                        <span style={{ fontSize: '0.9rem' }}>{msg.text}</span>
+                     </div>
+                   );
+                 })
+               )}
+               <div ref={chatEndRef} />
+             </div>
+
+             <form onSubmit={sendChat} style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                <Input 
+                  placeholder="Message driver/passengers..." 
+                  value={chatMessage} 
+                  onChange={(e) => setChatMessage(e.target.value)} 
+                  className="flex-1" 
+                  style={{ marginBottom: 0 }}
+                />
+                <Button type="submit" style={{ padding: '0.5rem 1rem' }}>Send</Button>
+             </form>
+          </Card>
+        )}
+
+      </div>
     </div>
   );
 }

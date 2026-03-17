@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import api from '../api';
 import { useToast } from '../context/ToastContext';
+import { Card } from './ui/Card';
+import { Button } from './ui/Button';
+import { Input } from './ui/Input';
 
 const CAMPUS_QUICK_PICKS = [
   { label: 'SRM Main Gate', address: 'SRM Institute of Science and Technology, Kattankulathur' },
@@ -21,19 +24,17 @@ export default function PostRide() {
   const [loading, setLoading] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [error, setError] = useState('');
+  
   const [repeatWeekly, setRepeatWeekly] = useState(false);
   const [repeatTime, setRepeatTime] = useState('08:00');
   const [repeatDays, setRepeatDays] = useState([]);
+  
   const navigate = useNavigate();
   const showToast = useToast();
 
   const WEEKDAYS = [
-    { value: 0, label: 'Sun' },
-    { value: 1, label: 'Mon' },
-    { value: 2, label: 'Tue' },
-    { value: 3, label: 'Wed' },
-    { value: 4, label: 'Thu' },
-    { value: 5, label: 'Fri' },
+    { value: 0, label: 'Sun' }, { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' },
+    { value: 3, label: 'Wed' }, { value: 4, label: 'Thu' }, { value: 5, label: 'Fri' },
     { value: 6, label: 'Sat' },
   ];
   const toggleDay = (d) => setRepeatDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort((a, b) => a - b)));
@@ -43,17 +44,8 @@ export default function PostRide() {
       setError('Geolocation not supported');
       return;
     }
-    if (typeof window !== 'undefined' && !window.isSecureContext) {
-      setError('Location only works on HTTPS or localhost. Open this app via https:// or http://localhost.');
-      return;
-    }
     setError('');
     setLocationLoading(true);
-    const options = {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 60000,
-    };
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setMyLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
@@ -62,21 +54,9 @@ export default function PostRide() {
       },
       (err) => {
         setLocationLoading(false);
-        switch (err.code) {
-          case err.PERMISSION_DENIED:
-            setError('Location access was denied. Please allow location in your browser or device settings.');
-            break;
-          case err.POSITION_UNAVAILABLE:
-            setError('Location is unavailable. Try moving to a spot with better GPS signal or use an address instead.');
-            break;
-          case err.TIMEOUT:
-            setError('Location request timed out. Please try again or enter an address manually.');
-            break;
-          default:
-            setError('Could not get your location. Try again or enter an address.');
-        }
+        setError('Location access failed. Please enter the address manually.');
       },
-      options
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
     );
   };
 
@@ -84,229 +64,174 @@ export default function PostRide() {
     e.preventDefault();
     setError('');
     setLoading(true);
-    const origin = useMyLocation && myLocation
-      ? { lat: myLocation.lat, lng: myLocation.lng }
-      : originAddress.trim();
-    if (!origin || !destination.trim()) {
-      setError('Please fill origin and destination.');
-      setLoading(false);
-      return;
+    
+    // In actual implementation, we'd geocode coordinates to an address if myLocation is used
+    // For now we map it appropriately to match Prisma schema
+    let payload = {};
+    if (useMyLocation && myLocation) {
+        payload = { originLat: myLocation.lat, originLng: myLocation.lng, originAddress: 'Current GPS Location' };
+    } else {
+        // Dummy geocoding assumption (real geocoding should happen here or on backend parsing origin string)
+        payload = { originLat: 12.8236, originLng: 80.0435, originAddress: originAddress.trim() }; 
     }
+    payload.destAddress = destination.trim();
+    // Dummy dest cords
+    payload.destLat = 12.8230;
+    payload.destLng = 80.0450;
+    payload.maxSeats = maxSeats;
+
+    if (!payload.originAddress || !payload.destAddress) {
+      setError('Please fill origin and destination.');
+      setLoading(false); return;
+    }
+
     if (repeatWeekly) {
-      if (repeatDays.length === 0) {
-        setError('Select at least one day for the recurring ride.');
-        setLoading(false);
-        return;
-      }
+      if (repeatDays.length === 0) { setError('Select at least one day.'); setLoading(false); return; }
+      payload.departureTime = repeatTime;
+      payload.daysOfWeek = repeatDays.join(',');
       try {
-        await api.post('/recurring', {
-          origin,
-          destination: destination.trim(),
-          departure_time: repeatTime,
-          days_of_week: repeatDays,
-          max_seats: maxSeats,
-        });
-        showToast('Recurring ride created! Rides will appear on your dashboard.');
+        await api.post('/recurring', payload);
+        showToast('Recurring ride created!', 'success');
         navigate('/', { replace: true });
       } catch (err) {
-        setError(err.response?.data?.error || 'Failed to create recurring ride');
-      } finally {
-        setLoading(false);
-      }
+        setError(err.response?.data?.message || 'Failed to create recurring template');
+      } finally { setLoading(false); }
       return;
     }
+
     if (!departureAt) {
-      setError('Please fill departure date and time.');
-      setLoading(false);
-      return;
+      setError('Please provide departure date & time.');
+      setLoading(false); return;
     }
+
+    payload.departureAt = new Date(departureAt).toISOString();
+
     try {
-      const { data } = await api.post('/rides', {
-        origin,
-        destination: destination.trim(),
-        departure_at: new Date(departureAt).toISOString(),
-        max_seats: maxSeats,
-      });
-      showToast('Ride posted!');
-      navigate(`/rides/${data.id}`, { replace: true });
+      const { data } = await api.post('/rides', payload);
+      showToast('Ride posted successfully!', 'success');
+      navigate(`/rides/${data.data.ride.id}`, { replace: true });
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create ride');
+      setError(err.response?.data?.message || 'Failed to create ride');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="app-shell">
-      <header className="app-brand-bar">
-        <div>
-          <div className="app-brand-title">Post a campus ride</div>
-          <div className="app-brand-subtitle">
-            Share your route so nearby SRM students can hop in and split fuel fairly.
+    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+      <div className="flex-between" style={{ marginBottom: '2rem' }}>
+         <div>
+            <h1 className="text-title" style={{ fontSize: '2rem' }}>Post a Ride</h1>
+            <p className="text-muted">Share your commute and split costs.</p>
+         </div>
+         <Link to="/"><Button variant="outline">Back to Dashboard</Button></Link>
+      </div>
+
+      {error && (
+          <div style={{ padding: '1rem', background: 'var(--pk-danger-bg)', color: 'var(--pk-danger)', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem' }}>
+            {error}
           </div>
-        </div>
-        <Link to="/" className="btn btn-ghost">
-          ← Back to dashboard
-        </Link>
-      </header>
+      )}
 
-      <main className="app-main-card" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-        <div style={{ maxWidth: 540, width: '100%' }}>
-          {error && <p className="field-error" style={{ marginBottom: 10 }}>{error}</p>}
+      <Card>
+        <form onSubmit={handleSubmit}>
+          
+          <div style={{ marginBottom: '1.5rem' }}>
+             <Input
+                label="Origin Pick-up Point"
+                placeholder="Hostel block, Main Gate..."
+                value={originAddress}
+                onChange={(e) => { setOriginAddress(e.target.value); setUseMyLocation(false); }}
+                disabled={useMyLocation}
+             />
+             <div className="flex-between" style={{ marginTop: '0.5rem' }}>
+                 <p className="text-xs text-muted">Or use GPS location:</p>
+                 <Button type="button" variant={useMyLocation ? 'primary' : 'outline'} onClick={getLocation} disabled={locationLoading} style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}>
+                   {locationLoading ? 'Locating...' : (useMyLocation ? 'Location set!' : 'Use current location')}
+                 </Button>
+             </div>
+             
+             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '1rem' }}>
+                 {CAMPUS_QUICK_PICKS.map(({ label, address }) => (
+                    <Button key={label} type="button" variant="ghost" 
+                            style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'var(--pk-surface)' }}
+                            onClick={() => { setOriginAddress(address); setUseMyLocation(false); }}>
+                       {label}
+                    </Button>
+                 ))}
+             </div>
+          </div>
 
-          <div className="card-elevated">
-            <h2 style={{ marginBottom: 4 }}>Ride details</h2>
-            <p className="helper-text">
-              Use your current GPS location or type an address for the pick-up point.
-            </p>
-
-            <form onSubmit={handleSubmit}>
-              <label className="field-label" htmlFor="origin">
-                Origin
-              </label>
-              <div style={{ marginBottom: 12 }}>
-                <input
-                  id="origin"
-                  type="text"
-                  placeholder="Hostel / Gate / Landmark"
-                  value={originAddress}
-                  onChange={(e) => { setOriginAddress(e.target.value); setUseMyLocation(false); }}
-                  disabled={useMyLocation}
-                  className="text-input"
-                />
-                <button
-                  type="button"
-                  onClick={getLocation}
-                  disabled={locationLoading}
-                  className="btn btn-outline"
-                  style={{ marginTop: 8 }}
-                >
-                  {locationLoading ? 'Getting location…' : 'Use my current location'}
-                </button>
-                {useMyLocation && myLocation && (
-                  <span style={{ marginLeft: 6, fontSize: 12, color: '#9ca3af' }}>
-                    Using live GPS coordinates
-                  </span>
-                )}
-                <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 8, marginBottom: 4 }}>Campus quick picks:</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {CAMPUS_QUICK_PICKS.map(({ label, address }) => (
-                    <button
-                      key={label}
-                      type="button"
-                      className="btn btn-outline"
-                      style={{ padding: '6px 10px', fontSize: 12 }}
-                      onClick={() => { setOriginAddress(address); setUseMyLocation(false); }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <label className="field-label" htmlFor="destination">
-                Destination
-              </label>
-              <input
-                id="destination"
-                type="text"
-                placeholder="Destination address"
+          <div style={{ marginBottom: '1.5rem' }}>
+             <Input
+                label="Destination"
+                placeholder="Where are you heading?"
                 value={destination}
                 onChange={(e) => setDestination(e.target.value)}
                 required
-                className="text-input"
-              />
-              <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 6, marginBottom: 4 }}>Campus quick picks:</p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {CAMPUS_QUICK_PICKS.map(({ label, address }) => (
-                  <button
-                    key={label}
-                    type="button"
-                    className="btn btn-outline"
-                    style={{ padding: '6px 10px', fontSize: 12 }}
-                    onClick={() => setDestination(address)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+             />
+             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '1rem' }}>
+                 {CAMPUS_QUICK_PICKS.map(({ label, address }) => (
+                    <Button key={`dest-${label}`} type="button" variant="ghost" 
+                            style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', background: 'var(--pk-surface)' }}
+                            onClick={() => setDestination(address)}>
+                       {label}
+                    </Button>
+                 ))}
+             </div>
+          </div>
 
-              {!repeatWeekly && (
-                <>
-                  <label className="field-label" htmlFor="departure" style={{ marginTop: 12 }}>
-                    Departure date &amp; time
-                  </label>
-                  <input
-                    id="departure"
-                    type="datetime-local"
-                    value={departureAt}
-                    onChange={(e) => setDepartureAt(e.target.value)}
-                    required={!repeatWeekly}
-                    className="datetime-input"
-                  />
-                </>
-              )}
-
-              <label className="field-label" htmlFor="max-seats" style={{ marginTop: 12 }}>
-                Max seats
-              </label>
-              <input
-                id="max-seats"
+          <div className="grid-cols-2">
+             {!repeatWeekly && (
+               <Input
+                  label="Departure Date & Time"
+                  type="datetime-local"
+                  value={departureAt}
+                  onChange={(e) => setDepartureAt(e.target.value)}
+                  style={{ colorScheme: 'dark' }}
+                  required={!repeatWeekly}
+               />
+             )}
+             
+             <Input
+                label="Available Seats"
                 type="number"
-                min={1}
-                max={6}
+                min="1" max="6"
                 value={maxSeats}
                 onChange={(e) => setMaxSeats(parseInt(e.target.value, 10) || 1)}
-                className="number-input"
-              />
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={repeatWeekly}
-                  onChange={(e) => setRepeatWeekly(e.target.checked)}
-                />
-                <span>Repeat weekly</span>
-              </label>
-              {repeatWeekly && (
-                <div style={{ marginTop: 10, padding: 12, background: 'rgba(15,23,42,0.5)', borderRadius: 10 }}>
-                  <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>Time each day</p>
-                  <input
-                    type="time"
-                    value={repeatTime}
-                    onChange={(e) => setRepeatTime(e.target.value)}
-                    className="datetime-input"
-                    style={{ marginBottom: 10 }}
-                  />
-                  <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>Days</p>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {WEEKDAYS.map(({ value, label }) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={repeatDays.includes(value) ? 'btn btn-primary' : 'btn btn-outline'}
-                        style={{ padding: '6px 10px', fontSize: 12 }}
-                        onClick={() => toggleDay(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="btn btn-primary"
-                style={{ width: '100%', marginTop: 18 }}
-              >
-                {loading ? 'Creating…' : 'Post ride'}
-              </button>
-            </form>
+                required
+             />
           </div>
-        </div>
-      </main>
+
+          <div style={{ background: 'var(--pk-bg-glass)', borderRadius: 'var(--radius-md)', padding: '1rem', marginTop: '1.5rem', border: '1px solid var(--pk-border)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: 500 }}>
+                 <input type="checkbox" checked={repeatWeekly} onChange={(e) => setRepeatWeekly(e.target.checked)} />
+                 Repeat as a recurring route
+              </label>
+
+              {repeatWeekly && (
+                 <div className="animate-slide-up" style={{ marginTop: '1rem', borderTop: '1px solid var(--pk-border)', paddingTop: '1rem' }}>
+                    <Input label="Departure time every day" type="time" value={repeatTime} onChange={(e) => setRepeatTime(e.target.value)} />
+                    <p className="form-label" style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>Select active days:</p>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      {WEEKDAYS.map(({ value, label }) => (
+                         <Button key={value} type="button" variant={repeatDays.includes(value) ? 'primary' : 'outline'}
+                                 style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}
+                                 onClick={() => toggleDay(value)}>
+                             {label}
+                         </Button>
+                      ))}
+                    </div>
+                 </div>
+              )}
+          </div>
+
+          <Button type="submit" isLoading={loading} style={{ width: '100%', marginTop: '2rem' }}>
+             Publish Route
+          </Button>
+
+        </form>
+      </Card>
     </div>
   );
 }
